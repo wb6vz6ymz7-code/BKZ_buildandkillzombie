@@ -1,6 +1,5 @@
 -- =====================================================
--- BKZ Drive | 预设 HUMAN 锁敌 | UI 仅 Drive
--- X -55~55 不锁（写死）
+-- BKZ Drive | HUMAN 锁敌（恢复可打怪）| Drive UI | X -55~55 不锁
 -- =====================================================
 
 local Players = game:GetService("Players")
@@ -27,7 +26,6 @@ local CONFIG = {
 	NpcRadius = 350,
 	Noclip = true,
 	DebugNPC = true,
-	TargetMode = "HUMAN", -- 预设锁定 HUMAN
 	ChaseBoost = 1.4,
 	UseNoLockX = true,
 	NoLockXMin = -55,
@@ -43,12 +41,6 @@ local lastGroundPos = nil
 local noGroundSince = nil
 local npcCache = { part = nil, untilT = 0 }
 local lastNpcLog = 0
-
-local MAP_SKIP = {
-	"baseplate", "terrain", "spawn", "lobby", "garage", "plot",
-	"road", "track", "barrier", "wall", "floor", "ceiling",
-	"camera", "light", "part", "meshpart", "union",
-}
 
 local function getModelPart(m)
 	if not m then return nil end
@@ -83,36 +75,22 @@ local function isMyCar(m)
 	return car and (m == car or (m and m:IsDescendantOf(car)))
 end
 
-local function pathLower(inst)
-	local ok, s = pcall(function() return string.lower(inst:GetFullName()) end)
-	return ok and s or ""
-end
-
-local function looksLikeMap(m)
-	local n = string.lower(m.Name)
-	local full = pathLower(m)
-	for _, k in ipairs(MAP_SKIP) do
-		if n == k then return true end
-	end
-	return false
-end
-
-local function hasAnyHumanoid(m)
-	if m:FindFirstChildOfClass("Humanoid") then return true end
-	for _, d in ipairs(m:GetDescendants()) do
-		if d:IsA("Humanoid") and d.Health > 0 then return true end
-	end
-	return false
-end
-
--- HUMAN：有 Humanoid 的非玩家
+-- 与「能打到所有怪物」相同：任意非玩家 Humanoid
 local function isEnemyModel(m)
 	if not m or not m:IsA("Model") then return false end
 	if m == LP.Character or (LP.Character and m:IsDescendantOf(LP.Character)) then return false end
 	if Players:GetPlayerFromCharacter(m) then return false end
 	if isMyCar(m) then return false end
-	if looksLikeMap(m) then return false end
-	return hasAnyHumanoid(m)
+
+	local hum = m:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Health > 0 then return true end
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("Humanoid") and d.Health > 0 then
+			local owner = Players:GetPlayerFromCharacter(d.Parent)
+			if not owner then return true end
+		end
+	end
+	return false
 end
 
 local function inNoLockX(pos)
@@ -122,10 +100,9 @@ end
 
 local function nearestEnemy(origin, radius)
 	if npcCache.part and os.clock() < npcCache.untilT then
-		if npcCache.part.Parent and (npcCache.part.Position - origin).Magnitude <= radius then
-			if not inNoLockX(npcCache.part.Position) then
-				return npcCache.part
-			end
+		local p = npcCache.part
+		if p.Parent and (p.Position - origin).Magnitude <= radius and not inNoLockX(p.Position) then
+			return p
 		end
 	end
 
@@ -147,6 +124,7 @@ local function nearestEnemy(origin, radius)
 		end
 	end
 
+	-- 全图 Humanoid（与可打怪版相同）
 	for _, inst in ipairs(Workspace:GetDescendants()) do
 		if inst:IsA("Humanoid") and inst.Health > 0 then
 			local m = inst:FindFirstAncestorOfClass("Model")
@@ -154,12 +132,12 @@ local function nearestEnemy(origin, radius)
 		end
 	end
 
-	if CONFIG.DebugNPC and os.clock() - lastNpcLog > 0.8 then
+	if CONFIG.DebugNPC and os.clock() - lastNpcLog > 0.7 then
 		lastNpcLog = os.clock()
 		if best then
 			print(string.format("[BKZ] LOCK %s dist=%.1f x=%.1f", bestName, bestD, best.Position.X))
 		else
-			print(string.format("[BKZ] NO LOCK r=%.0f ok=%d skipX=%d", radius, scanned, skippedX))
+			print(string.format("[BKZ] NO LOCK r=%.0f found=%d skipX=%d", radius, scanned, skippedX))
 		end
 	end
 
@@ -220,7 +198,7 @@ local function captureStartX()
 	if p then
 		startX = p.X
 		lastGroundPos = p
-		print(string.format("[BKZ] start X=%.1f HUMAN | noLock X [%.0f,%.0f]", startX, CONFIG.NoLockXMin, CONFIG.NoLockXMax))
+		print(string.format("[BKZ] start X=%.1f | noLock X [%.0f,%.0f]", startX, CONFIG.NoLockXMin, CONFIG.NoLockXMax))
 	end
 	lastZComp = 0
 	noGroundSince = nil
@@ -346,7 +324,7 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- ===== UI：只保留 Drive =====
+-- UI：仅 Drive
 local WindUI
 pcall(function()
 	WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
@@ -361,7 +339,7 @@ if WindUI then
 	local Window = WindUI:CreateWindow({
 		Title = "BKZ Drive",
 		Icon = "car",
-		Author = "HUMAN | X no-lock",
+		Author = "HUMAN lock fixed",
 		Folder = "BKZDrive",
 		Size = UDim2.fromOffset(480, 360),
 		Transparent = true,
@@ -379,36 +357,29 @@ if WindUI then
 			if v then captureStartX() else restoreCollide(); startX = nil end
 		end,
 	})
-
 	Main:Slider({
 		Title = "Speed",
 		Value = { Min = 0, Max = 1000, Default = 200 },
 		Callback = function(v) CONFIG.Speed = v end,
 	})
-
 	Main:Dropdown({
 		Title = "Mode",
 		Values = { "FORWARD", "ZOMBIE" },
 		Value = "ZOMBIE",
-		Callback = function(v)
-			CONFIG.Mode = v
-			print("[BKZ] Mode =", v)
-		end,
+		Callback = function(v) CONFIG.Mode = v end,
 	})
-
 	Main:Slider({
 		Title = "NPC Radius",
 		Value = { Min = 20, Max = 500, Default = 350 },
 		Callback = function(v) CONFIG.NpcRadius = v end,
 	})
-
 	Main:Toggle({
 		Title = "Noclip",
 		Value = true,
 		Callback = function(v) CONFIG.Noclip = v end,
 	})
 else
-	warn("[BKZ] WindUI failed — getgenv().BKZ_CFG.Enabled = true")
+	warn("[BKZ] WindUI failed")
 end
 
-print("[BKZ] HUMAN lock | no-lock X [-55,55] | UI: Drive only")
+print("[BKZ] HUMAN restored | X -55~55 skip | Drive UI only")
